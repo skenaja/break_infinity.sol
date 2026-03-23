@@ -237,9 +237,35 @@ library Decimal {
     // ── Comparison ────────────────────────────────────────────────────────────
 
     /// @notice Returns -1 if a < b, 0 if a == b, 1 if a > b.
+    ///
+    /// @dev Decision tree:
+    ///      1. Both zero           → 0
+    ///      2. One zero            → sign of the non-zero operand determines result
+    ///      3. Opposite signs      → positive > negative
+    ///      4. Same sign           → compare magnitude (exponent first, then mantissa)
+    ///                               Negate for negatives: larger magnitude = smaller value
     function cmp(D memory a, D memory b) internal pure returns (int8) {
-        // TODO: Phase B-5
-        revert("not implemented");
+        bool aZero = a.mantissa == 0;
+        bool bZero = b.mantissa == 0;
+
+        if (aZero && bZero) return 0;
+        if (aZero) return b.negative ? int8(1) : int8(-1);
+        if (bZero) return a.negative ? int8(-1) : int8(1);
+
+        // Both non-zero — opposite signs
+        if (!a.negative && b.negative) return 1;
+        if (a.negative && !b.negative) return -1;
+
+        // Same sign — compare magnitude
+        int8 mag;
+        if      (a.exponent > b.exponent)  mag =  1;
+        else if (a.exponent < b.exponent)  mag = -1;
+        else if (a.mantissa > b.mantissa)  mag =  1;
+        else if (a.mantissa < b.mantissa)  mag = -1;
+        else                               mag =  0;
+
+        // Negative numbers: larger magnitude means smaller value
+        return a.negative ? -mag : mag;
     }
 
     function eq(D memory a, D memory b)  internal pure returns (bool) { return cmp(a,b) == 0; }
@@ -258,6 +284,14 @@ library Decimal {
         internal pure returns (D memory)
     {
         return max(lo, min(x, hi));
+    }
+
+    function clampMin(D memory x, D memory lo) internal pure returns (D memory) {
+        return max(lo, x);
+    }
+
+    function clampMax(D memory x, D memory hi) internal pure returns (D memory) {
+        return min(x, hi);
     }
 
     // ── Sign / absolute value ─────────────────────────────────────────────────
