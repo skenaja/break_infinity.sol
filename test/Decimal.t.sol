@@ -268,11 +268,6 @@ contract DecimalTest is Test {
 
     // ── Phase B–L stubs still revert ─────────────────────────────────────────
 
-    function test_add_stub_reverts() public {
-        vm.expectRevert();
-        dh.add(Decimal.one(), Decimal.one());
-    }
-
     function test_mul_stub_reverts() public {
         vm.expectRevert();
         dh.mul(Decimal.one(), Decimal.one());

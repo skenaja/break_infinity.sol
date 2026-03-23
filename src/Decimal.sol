@@ -314,14 +314,59 @@ library Decimal {
     // ── Addition & Subtraction ────────────────────────────────────────────────
 
     /// @notice a + b
+    ///
+    /// @dev Algorithm:
+    ///   1. Zero short-circuits.
+    ///   2. Order by magnitude: big = the operand with larger |value|.
+    ///      Exponent determines magnitude; tie-break on mantissa.
+    ///   3. expDiff = big.exponent − small.exponent  (always ≥ 0).
+    ///      If expDiff > MAX_SIGNIFICANT_DIGITS: small is negligible, return big.
+    ///   4. Align: alignedSmall = small.mantissa / 10^expDiff.
+    ///   5. Combine:
+    ///      • same sign  → newMantissa = big.mantissa + alignedSmall
+    ///      • diff sign  → newMantissa = big.mantissa − alignedSmall
+    ///                     (exact cancellation → zero)
+    ///   6. normalize(D{newMantissa, big.exponent, big.negative})
     function add(D memory a, D memory b) internal pure returns (D memory) {
-        // TODO: Phase D-9
-        //   Align: let (big, small) = exponent-order;
-        //   if big.exponent - small.exponent > MAX_SIGNIFICANT_DIGITS: return big
-        //   shift small.mantissa right by difference in exponents
-        //   handle sign: same sign → add mantissas; opposite → subtract
-        //   renormalize
-        revert("not implemented");
+        // ── Step 1: zero short-circuits ──────────────────────────────────────
+        if (a.mantissa == 0) return b;
+        if (b.mantissa == 0) return a;
+
+        // ── Step 2: order by magnitude ────────────────────────────────────────
+        bool aIsBig = (a.exponent != b.exponent)
+            ? a.exponent > b.exponent
+            : a.mantissa >= b.mantissa;
+        D memory big   = aIsBig ? a : b;
+        D memory small = aIsBig ? b : a;
+
+        // ── Step 3: insignificance cutoff ─────────────────────────────────────
+        int256 expDiff = int256(big.exponent) - int256(small.exponent);
+        if (expDiff > int256(uint256(MAX_SIGNIFICANT_DIGITS))) return big;
+
+        // ── Step 4: align small to big's exponent scale ───────────────────────
+        uint128 alignedSmall = uint128(
+            uint256(small.mantissa) / DecimalMath.pow10(uint256(expDiff))
+        );
+
+        // ── Step 5: combine ───────────────────────────────────────────────────
+        uint128 newMantissa;
+        if (big.negative == small.negative) {
+            // Same sign: magnitudes add.
+            // Max sum: ~10e18 + ~10e18 = ~20e18, fits in uint128.
+            newMantissa = uint128(uint256(big.mantissa) + uint256(alignedSmall));
+        } else {
+            // Opposite sign: big always dominates (by construction).
+            uint256 diff = uint256(big.mantissa) - uint256(alignedSmall);
+            if (diff == 0) return zero();
+            newMantissa = uint128(diff);
+        }
+
+        // ── Step 6: normalize ─────────────────────────────────────────────────
+        return normalize(D({
+            mantissa: newMantissa,
+            exponent: big.exponent,
+            negative: big.negative
+        }));
     }
 
     /// @notice a - b
