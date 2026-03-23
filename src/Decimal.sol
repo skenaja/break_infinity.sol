@@ -179,7 +179,12 @@ library Decimal {
         int256 mantissaLog = DecimalMath.floorLog10(uint256(d.mantissa));
         int256 shift = mantissaLog - 18; // target: floorLog10(mantissa) == 18
 
-        if (shift == 0) return d;
+        if (shift == 0) {
+            // Mantissa already normal; still enforce exponent bounds.
+            if (int256(d.exponent) >  int256(EXP_LIMIT)) revert IDecimalErrors.Decimal__ExponentOverflow(d.exponent);
+            if (int256(d.exponent) < -int256(EXP_LIMIT)) return D({mantissa: 0, exponent: 0, negative: false});
+            return d;
+        }
 
         int256 newExp = int256(d.exponent) + shift;
         if (newExp >  int256(EXP_LIMIT)) revert IDecimalErrors.Decimal__ExponentOverflow(int64(newExp));
@@ -377,20 +382,30 @@ library Decimal {
     // ── Multiplication & Division ─────────────────────────────────────────────
 
     /// @notice a * b
+    ///
+    /// @dev Both inputs are normalized so mantissas are in [SCALE, 10*SCALE).
+    ///      mulFixed(a.mantissa, b.mantissa) = a.mantissa * b.mantissa / 1e18
+    ///      is in [1e18, ~100e18) — normalize adjusts the exponent by 0 or 1.
+    ///      Exponents are in [-EXP_LIMIT, EXP_LIMIT] so their sum fits in int64.
     function mul(D memory a, D memory b) internal pure returns (D memory) {
-        // TODO: Phase E-11
-        //   newMantissa = mulFixed(a.mantissa, b.mantissa)  [intermediate in uint256]
-        //   newExponent = a.exponent + b.exponent
-        //   newNegative = a.negative XOR b.negative
-        //   fromParts(newMantissa, newExponent, newNegative)
-        revert("not implemented");
+        if (a.mantissa == 0 || b.mantissa == 0) return zero();
+        uint128 newMantissa = uint128(DecimalMath.mulFixed(uint256(a.mantissa), uint256(b.mantissa)));
+        int64   newExp      = a.exponent + b.exponent;
+        bool    newNeg      = a.negative != b.negative;
+        return normalize(D({mantissa: newMantissa, exponent: newExp, negative: newNeg}));
     }
 
     /// @notice a / b
+    ///
+    /// @dev divFixed(a.mantissa, b.mantissa) = a.mantissa * 1e18 / b.mantissa
+    ///      is in (~1e17, 1e19) — normalize adjusts the exponent by -1 or 0.
     function div(D memory a, D memory b) internal pure returns (D memory) {
-        // TODO: Phase E-12
         if (b.mantissa == 0) revert IDecimalErrors.Decimal__DivisionByZero();
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        uint128 newMantissa = uint128(DecimalMath.divFixed(uint256(a.mantissa), uint256(b.mantissa)));
+        int64   newExp      = a.exponent - b.exponent;
+        bool    newNeg      = a.negative != b.negative;
+        return normalize(D({mantissa: newMantissa, exponent: newExp, negative: newNeg}));
     }
 
     /// @notice 1 / a

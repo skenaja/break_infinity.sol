@@ -266,10 +266,18 @@ contract DecimalTest is Test {
         assertEq(d.exponent, 3);
     }
 
-    // ── Phase B–L stubs still revert ─────────────────────────────────────────
+    // ── mul smoke tests ───────────────────────────────────────────────────────
 
-    function test_mul_stub_reverts() public {
-        vm.expectRevert();
-        dh.mul(Decimal.one(), Decimal.one());
+    function test_mul_oneTimesOne() public pure {
+        Decimal.D memory r = Decimal.mul(Decimal.one(), Decimal.one());
+        assertEq(r.mantissa, S);
+        assertEq(r.exponent, 0);
+        assertFalse(r.negative);
+    }
+
+    function test_mul_twoTimesThree() public pure {
+        // 2 * 3 = 6
+        Decimal.D memory r = Decimal.mul(Decimal.fromUint(2), Decimal.fromUint(3));
+        assertTrue(Decimal.eq(r, Decimal.fromUint(6)));
     }
 }
