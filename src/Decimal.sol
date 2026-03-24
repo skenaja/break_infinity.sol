@@ -420,24 +420,211 @@ library Decimal {
         return D({mantissa: MANTISSA_SCALE, exponent: n, negative: false});
     }
 
-    /// @notice base^exp — uses log10 + exp10 strategy
+    /// @notice base^exp — uses log10 + exp10 strategy.
+    ///         base^0 = 1; 0^x = 0.
+    ///
+    /// @dev Algorithm:
+    ///      1. log10(|base|) = base.exponent + log10(base.mantissa / SCALE)
+    ///         The second term is in [0,1) and is passed unnormalized to add(),
+    ///         which normalises the sum automatically.
+    ///      2. t = exponent × log10(|base|)
+    ///      3. Split t = floor(t) + frac(t), frac ∈ [0,1).
+    ///      4. result.mantissa = exp10Fixed(frac × SCALE)
+    ///         result.exponent = floor(t)
+    ///      For negative base the sign is preserved only when exponent is a small
+    ///      odd integer (≤ 17 decimal digits); non-integer exponents return positive.
     function pow(D memory base, D memory exponent) internal pure returns (D memory) {
-        // TODO: Phase F-15
-        // result = 10^(exponent * log10(base))
-        revert("not implemented");
+        if (base.mantissa == 0) return zero();
+        if (exponent.mantissa == 0) return one();
+
+        bool baseNeg = base.negative;
+        // Do NOT write back to base — memory structs are passed by reference and
+        // mutating base.negative would corrupt the caller's variable.
+
+        // log10(|base|) = base.exponent + log10(base.mantissa / SCALE)
+        // log10Fixed returns a value in [0, SCALE) for mantissa ∈ [SCALE, 10*SCALE)
+        uint256 logFrac = uint256(DecimalMath.log10Fixed(uint256(base.mantissa)));
+        // D{logFrac, 0} is an unnormalized D representing logFrac/SCALE ∈ [0,1).
+        // add() normalises the combined result, so we skip an explicit normalize() here.
+        D memory logBase = add(
+            fromInt(int256(base.exponent)),
+            D({mantissa: uint128(logFrac), exponent: 0, negative: false})
+        );
+
+        // t = exponent × log10(base)
+        D memory t = mul(exponent, logBase);
+
+        // Decompose t into floor(t) and frac(t) × SCALE
+        (int64 newExp, uint256 fracFixed) = _splitFloorFrac(t);
+
+        // result mantissa = 10^frac
+        uint128 newMantissa = uint128(DecimalMath.exp10Fixed(int256(fracFixed)));
+
+        // Sign: negative base ^ odd-integer exponent → negative result
+        bool newNeg = baseNeg && _isOddIntegerD(exponent);
+
+        return normalize(D({mantissa: newMantissa, exponent: newExp, negative: newNeg}));
+    }
+
+    /// @dev Decompose a D into (floor(d), frac(d) × MANTISSA_SCALE).
+    ///      fracFixed ∈ [0, MANTISSA_SCALE).
+    function _splitFloorFrac(D memory t)
+        private
+        pure
+        returns (int64 intPart, uint256 fracFixed)
+    {
+        if (t.mantissa == 0) return (0, 0);
+
+        uint256 m = uint256(t.mantissa); // ∈ [SCALE, 10*SCALE)
+        int64   e = t.exponent;
+        uint256 magInt;
+        uint256 magFrac; // ∈ [0, SCALE)
+
+        if (e >= 18) {
+            // |t| is a pure integer: m × 10^(e−18)
+            uint256 shift = uint256(int256(e) - 18);
+            // Guard against overflow: result > EXP_LIMIT means normalize will revert.
+            // Using 18 as cap keeps us within uint256 without calling pow10 unsafely.
+            magInt  = shift > 18
+                ? uint256(int256(type(int64).max)) + 1 // sentinel — normalize will revert
+                : m * DecimalMath.pow10(shift);
+            magFrac = 0;
+        } else if (e >= 0) {
+            // |t| ∈ [1, 10^19): split integer and fractional parts
+            uint256 scale = DecimalMath.pow10(uint256(int256(18) - int256(e)));
+            magInt  = m / scale;
+            magFrac = (m % scale) * DecimalMath.pow10(uint256(int256(e)));
+        } else {
+            // e < 0: |t| < 1 — no integer part
+            magInt  = 0;
+            uint256 abse = uint256(-int256(e));
+            // For abse > 18: |t| < 1e-18, frac × SCALE < 1 → rounds to 0.
+            magFrac = abse > 18 ? 0 : m / DecimalMath.pow10(abse);
+        }
+
+        uint256 maxSafe = uint256(int256(type(int64).max));
+        if (!t.negative) {
+            intPart   = magInt > maxSafe ? type(int64).max : int64(int256(magInt));
+            fracFixed = magFrac;
+        } else {
+            if (magFrac == 0) {
+                intPart   = magInt > maxSafe ? type(int64).min : -int64(int256(magInt));
+                fracFixed = 0;
+            } else {
+                uint256 negMag = magInt + 1;
+                intPart   = negMag > maxSafe ? type(int64).min : -int64(int256(negMag));
+                fracFixed = uint256(MANTISSA_SCALE) - magFrac;
+            }
+        }
+    }
+
+    /// @dev Returns true if d represents an odd positive integer with ≤ 18 significant digits.
+    function _isOddIntegerD(D memory d) private pure returns (bool) {
+        if (d.negative)     return false; // only positive integer exponents tracked
+        if (d.exponent < 0) return false; // fractional value
+        if (d.exponent > 17) return false; // too large — TODO: use last digit
+        uint256 m     = uint256(d.mantissa);
+        uint256 scale = DecimalMath.pow10(uint256(int256(18) - int256(d.exponent)));
+        if (m % scale != 0) return false;  // has fractional part
+        return (m / scale) % 2 == 1;
     }
 
     /// @notice Square root
+    ///
+    /// @dev Mirrors break_infinity.js sqrt():
+    ///      Real value = (m/1e18) × 10^e.
+    ///      Even e: sqrt = sqrt(m/1e18) × 10^(e/2)
+    ///               → new mantissa field = isqrt(m) × 1e9, newExp = e/2
+    ///      Odd  e: absorb one factor of 10 into the mantissa:
+    ///               sqrt = sqrt(10×m/1e18) × 10^(floor(e/2))
+    ///               → new mantissa field = isqrt(10×m) × 1e9, newExp = (e−1)/2
+    ///      Negative numbers revert; zero returns zero.
     function sqrt(D memory a) internal pure returns (D memory) {
-        // TODO: Phase F-16
-        // Fast path: if exponent is even → sqrt(mantissa) * 10^(exponent/2)
-        // Odd exponent: sqrt(mantissa * 10) * 10^((exponent-1)/2)
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        if (a.negative) revert IDecimalErrors.Decimal__NegativeSqrt();
+
+        uint128 newMantissa;
+        int64   newExp;
+
+        if (a.exponent % 2 == 0) {
+            // Even exponent.
+            // newMantissa = sqrt(m/1e18) * 1e18 = sqrt(m * 1e18)
+            // m ∈ [1e18, 10e18)  →  m*1e18 ∈ [1e36, 10e36)
+            // isqrt ∈ [1e18, ~3.162e18) ✓
+            newMantissa = uint128(_isqrt(uint256(a.mantissa) * 1e18));
+            newExp      = a.exponent / 2;
+        } else {
+            // Odd exponent — absorb one factor of 10 into the mantissa.
+            // newMantissa = sqrt(10*m/1e18) * 1e18 = sqrt(10*m*1e18)
+            // 10*m ∈ [10e18, 100e18)  →  10*m*1e18 ∈ [1e37, 1e38) — no overflow ✓
+            // isqrt ∈ [~3.162e18, 1e19) ✓
+            // For negative odd e: Solidity truncates toward zero, so use (e−1)/2 = floor.
+            newMantissa = uint128(_isqrt(uint256(a.mantissa) * 10 * 1e18));
+            newExp      = (a.exponent - 1) / 2;
+        }
+
+        return normalize(D({mantissa: newMantissa, exponent: newExp, negative: false}));
     }
 
+    /// @dev Integer square root — Babylonian / Newton's method, rounds down.
+    function _isqrt(uint256 x) private pure returns (uint256 y) {
+        if (x == 0) return 0;
+        y = x;
+        uint256 z = (x >> 1) + 1;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) >> 1;
+        }
+    }
+
+    /// @notice Cube root — exact for perfect cubes; ≤ 1 ULP error otherwise.
+    ///         Negative inputs return a negative result.
+    ///
+    /// @dev Mirrors break_infinity.js cbrt():
+    ///      mod = exponent % 3.  Absorb 10^k into the mantissa so the
+    ///      remaining exponent is exactly divisible by 3:
+    ///        mod ==  0          → k = 0 (no absorption)
+    ///        mod ==  1, mod == -2 → k = 1 (absorb one factor of 10)
+    ///        mod ==  2, mod == -1 → k = 2 (absorb two factors of 10)
+    ///      Then newMantissa = icbrt(k_scaled_mantissa * 1e36)
+    ///           newExp      = (exponent − k) / 3
+    ///      (exact division guaranteed by construction).
     function cbrt(D memory a) internal pure returns (D memory) {
-        // TODO: Phase F-17 — pow(a, 1/3)
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+
+        int256 mod = a.exponent % 3;
+        uint256 k;
+        if (mod == 1 || mod == -2) {
+            k = 1;
+        } else if (mod == 2 || mod == -1) {
+            k = 2;
+        }
+        // else k = 0 (mod == 0)
+
+        // Scale mantissa by 10^k, then compute icbrt(scaled * 1e36).
+        // Max input to icbrt: 10e18 * 100 * 1e36 = 1e57 < uint256.max ✓
+        uint256 scaled  = uint256(a.mantissa) * DecimalMath.pow10(k);
+        uint128 newMant = uint128(_icbrt(scaled * 1e36));
+        int64   newExp  = int64((int256(a.exponent) - int256(k)) / 3);
+
+        return normalize(D({mantissa: newMant, exponent: newExp, negative: a.negative}));
+    }
+
+    /// @dev Integer cube root — Babylonian Newton's method, rounds down.
+    ///      Input range for this library: x ∈ [1e54, 1e57).
+    ///      Starts at 1e19 (guaranteed overestimate) and converges downward.
+    function _icbrt(uint256 x) private pure returns (uint256 y) {
+        if (x == 0) return 0;
+        unchecked {
+            y = 1e19; // cbrt(x) < 1e19 for all x < 1e57
+            uint256 z = (2 * y + x / (y * y)) / 3;
+            while (z < y) {
+                y = z;
+                z = (2 * y + x / (y * y)) / 3;
+            }
+            // Floor adjustment (Newton lands on floor or floor+1)
+            while (y * y * y > x) y--;
+        }
     }
 
     function sqr(D memory a)  internal pure returns (D memory) { return mul(a, a); }
@@ -446,26 +633,53 @@ library Decimal {
     // ── Logarithms ────────────────────────────────────────────────────────────
 
     /// @notice log10(a) — core log, others derive from this
+    /// @notice log10(a).  Reverts for a <= 0.
+    ///
+    /// @dev log10(mantissa * 10^exponent) = exponent + log10(mantissa / SCALE)
+    ///      The second term is in [0, 1) and is represented by an unnormalized D
+    ///      with exponent 0; add() + normalize() produce a correct result.
     function log10(D memory a) internal pure returns (D memory) {
-        // TODO: Phase G-19
-        // log10(m * 10^e) = log10(m) + e
-        // log10(m) uses DecimalMath.log10Fixed on the mantissa
-        revert("not implemented");
+        if (a.mantissa == 0) revert IDecimalErrors.Decimal__InvalidInput();
+        if (a.negative)      revert IDecimalErrors.Decimal__NegativeLog();
+
+        // Fractional part: log10(mantissa / SCALE) * SCALE ∈ [0, SCALE)
+        uint256 fracScaled = uint256(DecimalMath.log10Fixed(uint256(a.mantissa)));
+        D memory intPart   = fromInt(int256(a.exponent));
+
+        // Fast path: exact power of 10 (mantissa == SCALE → fracScaled == 0)
+        if (fracScaled == 0) return intPart;
+
+        // D{fracScaled, 0} is unnormalized (fracScaled < SCALE).
+        // add() short-circuits on zero intPart, so wrap in normalize().
+        return normalize(add(intPart,
+            D({mantissa: uint128(fracScaled), exponent: 0, negative: false})));
     }
 
-    function log2(D memory a)  internal pure returns (D memory) {
-        // TODO: Phase G-20 — log10(a) / log10(2)
-        revert("not implemented");
+    /// @notice log2(a) = log10(a) / log10(2).  Reverts for a <= 0.
+    function log2(D memory a) internal pure returns (D memory) {
+        D memory l = log10(a);
+        if (l.mantissa == 0) return zero(); // a == 1
+        // log10(2) = 0.30102999566... → D{3_010_299_956_639_811_952, -1, false}
+        return div(l, D({mantissa: 3_010_299_956_639_811_952, exponent: -1, negative: false}));
     }
 
+    /// @notice ln(a) = log10(a) / log10(e).  Reverts for a <= 0.
     function ln(D memory a) internal pure returns (D memory) {
-        // TODO: Phase G-21 — log10(a) / log10(e)
-        revert("not implemented");
+        D memory l = log10(a);
+        if (l.mantissa == 0) return zero(); // a == 1
+        // log10(e) = 0.43429448190... → D{4_342_944_819_032_518_277, -1, false}
+        return div(l, D({mantissa: 4_342_944_819_032_518_277, exponent: -1, negative: false}));
     }
 
+    /// @notice log_base(a) = log10(a) / log10(base).
+    ///         Reverts for a <= 0, base <= 0, or base == 1.
     function log(D memory a, D memory base) internal pure returns (D memory) {
-        // TODO: Phase G-22 — log10(a) / log10(base)
-        revert("not implemented");
+        D memory logA    = log10(a);     // reverts if a <= 0
+        D memory logBase = log10(base);  // reverts if base <= 0
+        if (logBase.mantissa == 0)       // base == 1: log undefined
+            revert IDecimalErrors.Decimal__InvalidInput();
+        if (logA.mantissa == 0) return zero(); // a == 1: result is 0 for any base
+        return div(logA, logBase);
     }
 
     /// @notice log10(|a|)
@@ -481,32 +695,121 @@ library Decimal {
 
     // ── Rounding ──────────────────────────────────────────────────────────────
 
+    /// @notice Round toward −∞.
     function floor(D memory a) internal pure returns (D memory) {
-        // TODO: Phase H-23
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        if (a.exponent >= 18) return a; // m × 10^(e−18) is already an exact integer
+        // e < 0: 0 < |a| < 1. _splitFloorFrac truncates magFrac to 0 for |e| > 18,
+        // so handle this range directly: floor rounds toward −∞.
+        if (a.exponent < 0) return a.negative ? fromInt(-1) : zero();
+        (int64 intPart, ) = _splitFloorFrac(a);
+        return fromInt(intPart);
     }
 
+    /// @notice Round toward +∞.
     function ceil(D memory a) internal pure returns (D memory) {
-        // TODO: Phase H-23
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        if (a.exponent >= 18) return a;
+        // e < 0: 0 < |a| < 1. ceil rounds toward +∞.
+        if (a.exponent < 0) return a.negative ? zero() : fromInt(1);
+        (int64 intPart, uint256 fracFixed) = _splitFloorFrac(a);
+        if (fracFixed == 0) return fromInt(intPart);
+        return fromInt(int256(intPart) + 1);
     }
 
+    /// @notice Round to nearest integer, ties round toward +∞ (matches JS Math.round).
     function round(D memory a) internal pure returns (D memory) {
-        // TODO: Phase H-23
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        if (a.exponent >= 18) return a;
+        (int64 intPart, uint256 fracFixed) = _splitFloorFrac(a);
+        if (fracFixed < uint256(MANTISSA_SCALE) / 2) return fromInt(intPart);
+        return fromInt(int256(intPart) + 1);
     }
 
+    /// @notice Round toward zero (drop the fractional part).
     function trunc(D memory a) internal pure returns (D memory) {
-        // TODO: Phase H-23
-        revert("not implemented");
+        if (a.mantissa == 0) return zero();
+        if (a.exponent >= 18) return a;
+        (int64 intPart, uint256 fracFixed) = _splitFloorFrac(a);
+        if (!a.negative || fracFixed == 0) return fromInt(intPart);
+        return fromInt(int256(intPart) + 1); // step toward zero for negative fractions
     }
 
     // ── Exponential ───────────────────────────────────────────────────────────
 
     /// @notice e^a
     function exp(D memory a) internal pure returns (D memory) {
-        // TODO: Phase I-24 — pow(E_CONSTANT, a)
-        revert("not implemented");
+        return pow(D({mantissa: 2_718_281_828_459_045_235, exponent: 0, negative: false}), a);
+    }
+
+    // ── Hyperbolic ────────────────────────────────────────────────────────────
+
+    /// @dev Shared helper: compute (exp(a), exp(-a)) in one place.
+    function _expPair(D memory a)
+        private pure
+        returns (D memory ePos, D memory eNeg)
+    {
+        ePos = exp(a);
+        eNeg = exp(D({mantissa: a.mantissa, exponent: a.exponent, negative: !a.negative}));
+    }
+
+    /// @dev Divide by the integer 2.
+    function _half(D memory a) private pure returns (D memory) {
+        return div(a, D({mantissa: 2 * uint128(MANTISSA_SCALE), exponent: 0, negative: false}));
+    }
+
+    /// @notice (exp(a) + exp(-a)) / 2  — always >= 1
+    function cosh(D memory a) internal pure returns (D memory) {
+        (D memory ep, D memory en) = _expPair(a);
+        return _half(add(ep, en));
+    }
+
+    /// @notice (exp(a) - exp(-a)) / 2  — sign matches a
+    function sinh(D memory a) internal pure returns (D memory) {
+        (D memory ep, D memory en) = _expPair(a);
+        return _half(sub(ep, en));
+    }
+
+    /// @notice sinh(a) / cosh(a)  — result in (-1, 1)
+    /// @dev Uses exp(2a) form to avoid cancellation for large |a|.
+    function tanh(D memory a) internal pure returns (D memory) {
+        // tanh = (e^2a - 1) / (e^2a + 1)
+        D memory e2a = exp(add(a, a));
+        D memory one = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        return div(sub(e2a, one), add(e2a, one));
+    }
+
+    /// @notice ln(a + sqrt(a^2 + 1))  — defined for all real a
+    function asinh(D memory a) internal pure returns (D memory) {
+        // sqrt(a^2 + 1) — a^2 is always non-negative, so a^2+1 >= 1 > 0
+        D memory a2p1 = add(sqr(a), D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false}));
+        return ln(add(a, sqrt(a2p1)));
+    }
+
+    /// @notice ln(a + sqrt(a^2 - 1))  — requires a >= 1
+    function acosh(D memory a) internal pure returns (D memory) {
+        // Domain: a >= 1  ↔  !a.negative && (a.exponent > 0 || a.mantissa >= MANTISSA_SCALE)
+        // Simplest check: a must be >= 1, i.e. not negative and value >= 1.
+        // Value >= 1 iff exponent >= 1 OR (exponent == 0 AND mantissa >= MANTISSA_SCALE).
+        // Since mantissa is always >= MANTISSA_SCALE when nonzero, value >= 1 iff !negative && exponent >= 0.
+        if (a.negative || a.exponent < 0)
+            revert IDecimalErrors.Decimal__InvalidInput();
+        // a^2 - 1: since a >= 1, a^2 >= 1, result >= 0; safe for sqrt.
+        D memory a2m1 = sub(sqr(a), D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false}));
+        return ln(add(a, sqrt(a2m1)));
+    }
+
+    /// @notice ln((1+a)/(1-a)) / 2  — requires |a| < 1
+    function atanh(D memory a) internal pure returns (D memory) {
+        // Domain: |a| < 1  ↔  a.exponent < 0  OR  (a.exponent == 0 is impossible since
+        // mantissa >= SCALE means |value| >= 1 when exponent == 0).
+        // So |a| < 1 iff a.exponent < 0 (or a is zero).
+        if (a.mantissa != 0 && a.exponent >= 0)
+            revert IDecimalErrors.Decimal__InvalidInput();
+        D memory one  = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        D memory oneP = add(one, a);   // 1 + a
+        D memory oneM = sub(one, a);   // 1 - a
+        return _half(ln(div(oneP, oneM)));
     }
 
     // ── Game economy helpers ──────────────────────────────────────────────────

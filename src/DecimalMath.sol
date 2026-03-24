@@ -23,6 +23,9 @@ library DecimalMath {
     /// @dev Fixed-point scale: 1e18
     uint256 internal constant MANTISSA_SCALE = 1e18;
 
+    /// @dev log2(10) * 1e18 — used to convert between log2 and log10 fixed-point.
+    uint256 internal constant LOG2_10 = 3_321_928_094_887_362_347;
+
     error DecimalMath__InputZero();
     error DecimalMath__DivisionByZero();
     error DecimalMath__MulDivOverflow();
@@ -69,33 +72,121 @@ library DecimalMath {
     /// @notice Computes log10(x) as a MANTISSA_SCALE fixed-point signed integer.
     /// @param x A MANTISSA_SCALE-scaled positive value (i.e. real value = x / 1e18).
     /// @return result log10(real value of x), scaled by MANTISSA_SCALE.
-    /// @dev Phase F (Decimal). Stub — reverts until implemented.
+    ///
+    /// @dev Algorithm: log10(x/1e18) = log2(x/1e18) / log2(10).
+    ///      1. integer_part = floorLog10(x) - 18
+    ///      2. Normalize m = x / 10^integer_part  →  m ∈ [1e18, 10e18)
+    ///      3. Reduce m to [1e18, 2e18) tracking integer log2 bits (0..3)
+    ///      4. Bit-squeezing: 30 iterations of square-and-check extract the
+    ///         fractional bits of log2(m/1e18) to ~1e-9 relative error
+    ///      5. log10 = log2 / LOG2_10   (one mulDiv)
     function log10Fixed(uint256 x) internal pure returns (int256 result) {
         if (x == 0) revert DecimalMath__InputZero();
-        // TODO: Phase F
-        // 1. integer_part = floorLog10(x) - 18  (since x is 1e18-scaled)
-        // 2. m = x / 10^(integer_part+18), brings x into [1e18, 10e18)
-        // 3. fractional_part = poly(m) — degree-6 minimax polynomial
-        //    over m ∈ [1e18, 10e18) mapped to t = (m - MIDPOINT) / RANGE ∈ [-1, 1]
-        // 4. return (integer_part * MANTISSA_SCALE) + fractional_part
-        revert("not implemented");
+
+        // ── Step 1: integer part of log10(x/1e18) ────────────────────────────
+        int256 intPart = floorLog10(x) - 18;
+
+        // ── Step 2: normalize to m ∈ [1e18, 10e18) ───────────────────────────
+        uint256 m;
+        if (intPart > 0) {
+            m = x / pow10(uint256(intPart));
+        } else if (intPart < 0) {
+            m = x * pow10(uint256(-intPart));
+        } else {
+            m = x;
+        }
+
+        // ── Step 3: reduce to [1e18, 2e18) for bit-squeezing ─────────────────
+        uint256 mw = m;
+        uint256 log2Int;
+        if      (mw >= 8 * MANTISSA_SCALE) { mw >>= 3; log2Int = 3; }
+        else if (mw >= 4 * MANTISSA_SCALE) { mw >>= 2; log2Int = 2; }
+        else if (mw >= 2 * MANTISSA_SCALE) { mw >>= 1; log2Int = 1; }
+        // else log2Int = 0; mw already in [1e18, 2e18)
+
+        // ── Step 4: bit-squeezing (30 iterations ≈ 1e-9 error) ───────────────
+        // Invariant: mw ∈ [1e18, 2e18) (real value ∈ [1, 2)).
+        // Each iteration: square mw; if ≥ 2e18 the next log2 bit is 1 → record it.
+        uint256 log2Frac;
+        uint256 delta = MANTISSA_SCALE >> 1; // 5e17
+        for (uint256 i; i < 30; ++i) {
+            mw = mulFixed(mw, mw);          // mw = mw^2 / 1e18
+            if (mw >= 2 * MANTISSA_SCALE) {
+                log2Frac += delta;
+                mw >>= 1;                   // keep mw in [1e18, 2e18)
+            }
+            delta >>= 1;
+        }
+
+        // ── Step 5: convert log2 → log10 ─────────────────────────────────────
+        uint256 log2val = log2Int * MANTISSA_SCALE + log2Frac;
+        uint256 fracPart = mulDiv(log2val, MANTISSA_SCALE, LOG2_10);
+
+        result = intPart * int256(MANTISSA_SCALE) + int256(fracPart);
     }
 
     // ── exp10Fixed ───────────────────────────────────────────────────────────
 
-    /// @notice Computes 10^x as a MANTISSA_SCALE fixed-point value.
-    /// @param x Signed MANTISSA_SCALE fixed-point exponent (real value = x / 1e18).
-    ///          Must satisfy x / 1e18 < 308 (otherwise result overflows uint256).
-    /// @return result 10^(x/1e18), scaled by MANTISSA_SCALE.
-    /// @dev Phase F (Decimal). Stub — reverts until implemented.
+    /// @notice Computes 10^(x/1e18) for x ∈ [0, MANTISSA_SCALE), returning a
+    ///         MANTISSA_SCALE-scaled result in [1e18, 10e18).
+    ///
+    /// @dev Algorithm: 10^f = 2^(f · log2(10)) via greedy binary expansion.
+    ///      g = f * LOG2_10 / 1e18  ∈ [0, LOG2_10) ≈ [0, 3.32 · 1e18)
+    ///      Split: g_int = g / 1e18 ∈ {0,1,2,3},  g_frac = g % 1e18 ∈ [0, 1e18).
+    ///      Expand g_frac in binary: for each bit k, if remaining ≥ 1e18/2^(k+1),
+    ///      multiply result by TWO_POW[k] = 2^(1/2^(k+1)) · 1e18 and subtract.
+    ///      Final result is multiplied by 2^g_int (bit-shift by g_int).
+    ///      30 iterations → ≤ 1e-9 relative error.
+    ///
+    ///      TWO_POW[k] = floor(2^(1/2^(k+1)) · 1e18), computed by repeated _isqrt.
     function exp10Fixed(int256 x) internal pure returns (uint256 result) {
-        // TODO: Phase F
-        // 1. n = x / int256(MANTISSA_SCALE)       (integer floor, signed)
-        // 2. f = x - n * int256(MANTISSA_SCALE)   (fractional part, [0, MANTISSA_SCALE))
-        // 3. integer_result = pow10(abs(n)) or its reciprocal if n < 0
-        // 4. frac_result    = poly(f)  — degree-6 minimax for 10^(f/1e18) over [0,1)
-        // 5. return mulFixed(integer_result, frac_result)
-        revert("not implemented");
+        require(x >= 0 && uint256(x) < MANTISSA_SCALE, "exp10Fixed: x out of [0,1)");
+
+        // g = x * LOG2_10 / 1e18 — the binary exponent to compute 2^g
+        uint256 g     = mulDiv(uint256(x), LOG2_10, MANTISSA_SCALE);
+        uint256 gInt  = g / MANTISSA_SCALE;       // 0, 1, 2, or 3
+        uint256 gFrac = g % MANTISSA_SCALE;       // [0, 1e18)
+
+        // Greedy binary expansion of g_frac: result = 2^(g_frac / 1e18) * 1e18
+        result = MANTISSA_SCALE; // 1.0 in 1e18-scaled
+        uint256 rem   = gFrac;
+        uint256 delta = MANTISSA_SCALE >> 1; // 5e17 (= 1e18/2)
+
+        // TWO_POW[k] = floor(2^(1/2^(k+1)) * 1e18), k = 0..29
+        // Generated by: TWO_POW[0] = _isqrt(2*1e36); TWO_POW[k] = _isqrt(TWO_POW[k-1]*1e18)
+        if (rem >= delta) { result = mulFixed(result, 1_414_213_562_373_095_048); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_189_207_115_002_721_066); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_090_507_732_665_257_658); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_044_273_782_427_413_839); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_021_897_148_654_116_677); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_010_889_286_051_700_459); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_005_429_901_112_802_820); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_002_711_275_050_202_484); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_001_354_719_892_108_205); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_677_130_693_066_356); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_338_508_052_682_312); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_169_239_705_302_230); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_084_616_272_694_312); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_042_307_241_395_818); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_021_153_396_964_807); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_010_576_642_549_719); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_005_288_307_291_762); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_002_644_150_150_115); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_001_322_074_201_117); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_661_036_882_073); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_330_518_386_415); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_165_259_179_552); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_082_629_586_362); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_041_314_792_327); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_020_657_395_950); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_010_328_697_921); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_005_164_348_947); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_002_582_174_470); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_001_291_087_234); rem -= delta; } delta >>= 1;
+        if (rem >= delta) { result = mulFixed(result, 1_000_000_000_645_543_616);               } // k=29, no delta update needed
+
+        // Scale by 2^g_int (g_int ∈ {0,1,2,3} so result stays in [1e18, ~10e18))
+        result <<= gInt;
     }
 
     // ── mulDiv ───────────────────────────────────────────────────────────────

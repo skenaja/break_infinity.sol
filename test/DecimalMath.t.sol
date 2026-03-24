@@ -170,15 +170,92 @@ contract DecimalMathTest is Test {
         assertEq(DecimalMath.divFixed(12 * S, 4 * S), 3 * S);
     }
 
-    // ── stubs still revert ────────────────────────────────────────────────────
+    // ── log10Fixed ────────────────────────────────────────────────────────────
 
-    function test_log10Fixed_stub_reverts() public {
-        vm.expectRevert();
-        h.log10Fixed(S);
+    function test_log10Fixed_zero_reverts() public {
+        vm.expectRevert(DecimalMath.DecimalMath__InputZero.selector);
+        h.log10Fixed(0);
     }
 
-    function test_exp10Fixed_stub_reverts() public {
-        vm.expectRevert();
-        h.exp10Fixed(0);
+    function test_log10Fixed_one() public pure {
+        // log10(1) = 0 → log10Fixed(1e18) == 0
+        assertEq(DecimalMath.log10Fixed(S), 0);
+    }
+
+    function test_log10Fixed_ten() public pure {
+        // log10(10) = 1 → log10Fixed(10*1e18) == 1e18
+        // 10*1e18 = 10e18 which is MANTISSA_MAX; use a value just below
+        // Actually log10Fixed(10e18) = log10(10) = 1, result = 1e18
+        assertEq(DecimalMath.log10Fixed(10 * S), int256(S));
+    }
+
+    function test_log10Fixed_hundred() public pure {
+        // log10Fixed(100 * 1e18) = log10(100) = 2  → 2e18
+        assertEq(DecimalMath.log10Fixed(100 * S), 2 * int256(S));
+    }
+
+    function test_log10Fixed_point1() public pure {
+        // log10(0.1) = -1 → log10Fixed(0.1 * 1e18 = 1e17) == -1e18
+        assertEq(DecimalMath.log10Fixed(S / 10), -int256(S));
+    }
+
+    function test_log10Fixed_sqrt10() public pure {
+        // log10(sqrt(10)) = 0.5 → result should be 5e17
+        // sqrt(10) * 1e18 = 3_162_277_660_168_379_332
+        int256 r = DecimalMath.log10Fixed(3_162_277_660_168_379_332);
+        int256 expected = int256(S / 2); // 5e17
+        int256 diff = r > expected ? r - expected : expected - r;
+        // Relative tolerance 1e-9: diff ≤ expected / 1e9 = 5e8
+        assertLe(diff, expected / 1e9, "log10(sqrt10) within 1e-9 relative");
+    }
+
+    function test_log10Fixed_normalizedMantissa() public pure {
+        // For any m in [1e18, 10e18), result should be in [0, 1e18)
+        int256 r = DecimalMath.log10Fixed(5 * S); // log10(5) ≈ 0.699
+        assertGe(r, 0);
+        assertLt(r, int256(S));
+    }
+
+    // ── exp10Fixed ────────────────────────────────────────────────────────────
+
+    function test_exp10Fixed_zero() public pure {
+        // 10^0 = 1 → exp10Fixed(0) == 1e18
+        assertEq(DecimalMath.exp10Fixed(0), S);
+    }
+
+    function test_exp10Fixed_half() public pure {
+        // 10^0.5 = sqrt(10) ≈ 3_162_277_660_168_379_332
+        uint256 r = DecimalMath.exp10Fixed(int256(S / 2));
+        uint256 expected = 3_162_277_660_168_379_332;
+        uint256 diff = r > expected ? r - expected : expected - r;
+        // Relative tolerance 1e-9: diff ≤ expected / 1e9 ≈ 3.16e9
+        assertLe(diff, expected / 1e9, "10^0.5 within 1e-9 relative");
+    }
+
+    function test_exp10Fixed_roundTrip_log10() public pure {
+        // exp10Fixed(log10Fixed(m)) ≈ m — round-trip tolerance 2e-9 (two ops)
+        uint256 m = 5 * S;
+        uint256 frac = uint256(DecimalMath.log10Fixed(m));
+        uint256 r = DecimalMath.exp10Fixed(int256(frac));
+        uint256 diff = r > m ? r - m : m - r;
+        assertLe(diff, m / 5e8, "round-trip(5) within 2e-9 relative");
+    }
+
+    function test_exp10Fixed_log10Fixed_roundTrip_3() public pure {
+        uint256 m = 3 * S;
+        uint256 frac = uint256(DecimalMath.log10Fixed(m));
+        uint256 r = DecimalMath.exp10Fixed(int256(frac));
+        uint256 diff = r > m ? r - m : m - r;
+        assertLe(diff, m / 5e8, "round-trip(3) within 2e-9 relative");
+    }
+
+    function test_exp10Fixed_resultInMantissaRange() public pure {
+        // For x in [0, 1e18), exp10Fixed(x) should be in [1e18, 10e18)
+        uint256 r0 = DecimalMath.exp10Fixed(0);
+        uint256 r1 = DecimalMath.exp10Fixed(int256(S) - 1); // just under 1
+        assertGe(r0, S);
+        assertLt(r0, 10 * S);
+        assertGe(r1, S);
+        assertLt(r1, 10 * S);
     }
 }
