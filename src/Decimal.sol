@@ -826,10 +826,13 @@ library Decimal {
         D memory costRatio,
         D memory currentOwned
     ) internal pure returns (D memory count) {
-        // TODO: Phase K-26
-        // Formula: floor(log(budget / costInitial * (costRatio-1) + costRatio^currentOwned)
-        //                / log(costRatio) - currentOwned)
-        revert("not implemented");
+        D memory one = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        // arg = budget / costInitial * (costRatio - 1) + costRatio^currentOwned
+        D memory arg = add(
+            mul(div(budget, costInitial), sub(costRatio, one)),
+            pow(costRatio, currentOwned)
+        );
+        return floor(sub(log(arg, costRatio), currentOwned));
     }
 
     /// @notice Total cost of buying `count` items from a geometric series.
@@ -839,9 +842,15 @@ library Decimal {
         D memory costRatio,
         D memory currentOwned
     ) internal pure returns (D memory total) {
-        // TODO: Phase K-27
-        // Formula: costInitial * costRatio^currentOwned * (costRatio^count - 1) / (costRatio - 1)
-        revert("not implemented");
+        D memory one         = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        D memory ratioMinusOne = sub(costRatio, one);
+        D memory ratioToCurrent = pow(costRatio, currentOwned);
+        D memory ratioToCount   = pow(costRatio, count);
+        // costInitial * costRatio^currentOwned * (costRatio^count - 1) / (costRatio - 1)
+        return div(
+            mul(costInitial, mul(ratioToCurrent, sub(ratioToCount, one))),
+            ratioMinusOne
+        );
     }
 
     /// @notice How many items you can afford when costs increase arithmetically.
@@ -855,10 +864,16 @@ library Decimal {
         D memory costIncrease,
         D memory currentOwned
     ) internal pure returns (D memory count) {
-        // TODO: Phase K-28
-        // Uses quadratic formula: n = floor((-b + sqrt(b^2 + 4ac)) / 2a)
-        // where a = costIncrease/2, b = costInitial + costIncrease*currentOwned - costIncrease/2
-        revert("not implemented");
+        // Quadratic: a*n^2 + b*n - budget = 0
+        // a = costIncrease/2,  b = costInitial + costIncrease*currentOwned - costIncrease/2
+        // n = floor((-b + sqrt(b^2 + 4*a*budget)) / (2*a))
+        D memory two   = D({mantissa: 2 * uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        D memory aCoef = _half(costIncrease);
+        D memory bCoef = sub(add(costInitial, mul(costIncrease, currentOwned)), aCoef);
+        // 4*a*budget = 4*(costIncrease/2)*budget = 2*costIncrease*budget
+        D memory disc  = add(sqr(bCoef), mul(mul(two, costIncrease), budget));
+        D memory numer = sub(sqrt(disc), bCoef);
+        return floor(div(numer, mul(two, aCoef)));
     }
 
     /// @notice Total cost of buying `count` items from an arithmetic series.
@@ -868,9 +883,11 @@ library Decimal {
         D memory costIncrease,
         D memory currentOwned
     ) internal pure returns (D memory total) {
-        // TODO: Phase K-29
-        // Formula: count * (costInitial + costIncrease*(currentOwned + (count-1)/2))
-        revert("not implemented");
+        D memory one      = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        // per-item average cost = costInitial + costIncrease*(currentOwned + (count-1)/2)
+        D memory halfNm1  = _half(sub(count, one));
+        D memory perItem  = add(costInitial, mul(costIncrease, add(currentOwned, halfNm1)));
+        return mul(count, perItem);
     }
 
     /// @notice Value metric for a purchase: lower is better.
@@ -880,7 +897,6 @@ library Decimal {
         D memory currentRate,
         D memory deltaRate
     ) internal pure returns (D memory) {
-        // TODO: Phase K-30
         return add(div(cost, currentRate), div(cost, deltaRate));
     }
 
