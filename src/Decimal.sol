@@ -904,15 +904,72 @@ library Decimal {
 
     /// @notice n! using Stirling's approximation for large n.
     function factorial(D memory n) internal pure returns (D memory) {
-        // TODO: Phase L-31
-        // For n <= 18: use lookup table of exact values
-        // For n > 18: Stirling: n! ≈ sqrt(2πn) * (n/e)^n
-        revert("not implemented");
+        // Collapse to a plain integer for the dispatch.  Values > 170 overflow D anyway
+        // (log10(170!) ≈ 306), but Stirling handles them gracefully.
+        // Negative or fractional inputs: treat as 0 (0! = 1).
+        uint256 ni = 0;
+        if (!n.negative && n.mantissa != 0) {
+            // extract floor(n) as uint256 — safe for any exponent we care about
+            if (n.exponent >= 0 && n.exponent <= 2) {
+                // value = (mantissa / SCALE) * 10^exponent  — integer part only
+                uint256 intVal = uint256(n.mantissa / uint128(MANTISSA_SCALE));
+                for (int64 i = 0; i < n.exponent; i++) intVal *= 10;
+                ni = intVal;
+            } else if (n.exponent > 2) {
+                ni = 19; // force Stirling path
+            }
+            // exponent < 0  →  |n| < 1  →  ni stays 0
+        }
+
+        // ── exact lookup for 0 ≤ n ≤ 18 ─────────────────────────────────────
+        if (ni <= 18) {
+            uint256[19] memory tbl;
+            tbl[0]  = 1;
+            tbl[1]  = 1;
+            tbl[2]  = 2;
+            tbl[3]  = 6;
+            tbl[4]  = 24;
+            tbl[5]  = 120;
+            tbl[6]  = 720;
+            tbl[7]  = 5040;
+            tbl[8]  = 40320;
+            tbl[9]  = 362880;
+            tbl[10] = 3628800;
+            tbl[11] = 39916800;
+            tbl[12] = 479001600;
+            tbl[13] = 6227020800;
+            tbl[14] = 87178291200;
+            tbl[15] = 1307674368000;
+            tbl[16] = 20922789888000;
+            tbl[17] = 355687428096000;
+            tbl[18] = 6402373705728000;
+            return fromUint(tbl[ni]);
+        }
+
+        // ── Stirling for n > 18 ───────────────────────────────────────────────
+        // ln(n!) ≈ n*ln(n) - n + 0.5*ln(2πn) + 1/(12n)
+        // The 1/(12n) term reduces error from O(1/n) to O(1/n^3).
+        D memory pi2    = D({mantissa: 6_283_185_307_179_586_477, exponent: 0, negative: false}); // 2π
+        D memory half   = D({mantissa: 5 * uint128(MANTISSA_SCALE), exponent: -1, negative: false});
+        D memory oneD   = D({mantissa: uint128(MANTISSA_SCALE), exponent: 0, negative: false});
+        D memory twelve = D({mantissa: 12 * uint128(MANTISSA_SCALE) / 10, exponent: 1, negative: false});
+        D memory lnN    = ln(n);
+        D memory t1     = sub(mul(n, lnN), n);          // n*ln(n) - n
+        D memory t2     = mul(half, ln(mul(pi2, n)));    // 0.5*ln(2πn)
+        D memory t3     = div(oneD, mul(twelve, n));     // 1/(12n)
+        return exp(add(add(t1, t2), t3));
     }
 
     /// @notice Number of meaningful decimal places (mantissa digits beyond integer part).
     function decimalPlaces(D memory a) internal pure returns (uint256) {
-        // TODO: Phase L-34
-        revert("not implemented");
+        if (a.mantissa == 0) return 0;
+        // Count trailing decimal zeros in the mantissa integer.
+        uint256 m = uint256(a.mantissa);
+        uint256 tz = 0;
+        while (m % 10 == 0) { m /= 10; tz++; }
+        // Last significant digit sits at 10^(exponent - 18 + tz).
+        // Decimal places = max(0, -(exponent - 18 + tz)) = max(0, 18 - tz - exponent).
+        int256 places = int256(18) - int256(uint256(tz)) - int256(a.exponent);
+        return places > 0 ? uint256(places) : 0;
     }
 }
