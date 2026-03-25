@@ -1,0 +1,30 @@
+{
+  "name": "break-infinity-sol",
+  "version": "0.1.0",
+  "description": "Solidity port of break_infinity.js — arbitrary-scale floating-point decimals for on-chain incremental/idle games",
+  "keywords": [
+    "solidity",
+    "ethereum",
+    "evm",
+    "math",
+    "decimal",
+    "incremental",
+    "idle-game",
+    "break-infinity",
+    "fixed-point"
+  ],
+  "license": "MIT",
+  "files": [
+    "src/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/break_infinity_sol"
+  },
+  "scripts": {
+    "test": "forge test",
+    "build": "forge build",
+    "snapshot": "forge snapshot"
+  },
+  "devDependencies": {}
+}

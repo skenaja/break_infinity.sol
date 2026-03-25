@@ -8,6 +8,26 @@ Numbers are represented as `sign × (mantissa / 1e18) × 10^exponent`, packing t
 
 ## Installation
 
+**npm / Hardhat / Truffle**
+
+```sh
+npm install break-infinity-sol
+```
+
+Then import directly — no remapping needed:
+
+```solidity
+import {Decimal} from "break-infinity-sol/Decimal.sol";
+```
+
+If you use Hardhat with a custom sources path, add to `hardhat.config.js`:
+
+```js
+paths: { sources: "./contracts" }
+```
+
+and include `node_modules` in your import path resolution (the default for Hardhat).
+
 **Foundry (forge install)**
 
 ```sh
@@ -17,7 +37,20 @@ forge install <your-org>/break_infinity_sol
 Add a remapping in `foundry.toml`:
 
 ```toml
-remappings = ["break_infinity_sol/=lib/break_infinity_sol/src/"]
+remappings = ["break-infinity-sol/=lib/break_infinity_sol/src/"]
+```
+
+**Foundry + npm**
+
+If you prefer npm over git submodules in a Foundry project, install the package and map it:
+
+```sh
+npm install break-infinity-sol
+```
+
+```toml
+# foundry.toml
+remappings = ["break-infinity-sol/=node_modules/break-infinity-sol/src/"]
 ```
 
 **Manual copy**
