@@ -1,5 +1,5 @@
 {
-  "name": "break-infinity-sol",
+  "name": "break_infinity.sol",
   "version": "0.1.0",
   "description": "Solidity port of break_infinity.js — arbitrary-scale floating-point decimals for on-chain incremental/idle games",
   "keywords": [
@@ -19,12 +19,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/break_infinity_sol"
+    "url": "https://github.com/skenaja/break_infinity.sol"
   },
   "scripts": {
     "test": "forge test",
     "build": "forge build",
     "snapshot": "forge snapshot"
   },
-  "devDependencies": {}
+  "dependencies": {
+    "break_infinity.js": "^2.2.0"
+  }
 }
