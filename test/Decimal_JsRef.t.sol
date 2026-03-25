@@ -114,9 +114,8 @@ contract DecimalJsRefTest is Test {
     /// count=1e6, costInitial=100, costRatio=1.2, currentOwned=0
     /// JS: 8.810846378333549e79183  →  mantissa=8810846378333549568 exp=79183
     ///
-    /// NOTE: At this scale the accumulated log10 error (~2e-10 per unit) multiplied
-    /// by count*ln(10) ~= 2.3e6 gives ~4.5e-4 relative error in the result.
-    /// The test uses a 5e-4 tolerance to document the known divergence.
+    /// NOTE: Error is fundamentally bounded by count * |log(ratio)| * ε_log10
+    /// ~= 1e6 * 0.0792 * 1e-10 ~= 8e-6 (two pow calls, so ~1e-5 net).
     function test_sumGeo_count1e6_ref() public pure {
         Decimal.D memory result = Decimal.sumGeometricSeries(
             _d(S, 6),                        // count=1e6
@@ -126,8 +125,8 @@ contract DecimalJsRefTest is Test {
         );
         Decimal.D memory expected = _d(8_810_846_378_333_549_568, 79183);
         assertEq(result.exponent, 79183, "sumGeo count=1e6: exp");
-        // 5e-4 relative tolerance — documents known precision loss at large exponents
-        assertLe(_relErr(result, expected), 5e14, "sumGeo count=1e6: 5e-4 rel");
+        // 1e-5 relative tolerance — limited by error amplification via two pow(ratio, 1e6) calls
+        assertLe(_relErr(result, expected), 1e13, "sumGeo count=1e6: 1e-5 rel");
     }
 
     // ── sumArithmeticSeries ───────────────────────────────────────────────────
@@ -605,6 +604,15 @@ contract DecimalJsRefTest is Test {
         assertEq(r.exponent, 43, "exp(100): e");
         // actual relative error ~4.4e-8
         assertLe(_relErr(r, _d(2_688_117_141_816_135_168, 43)), 5e10, "exp(100)");
+    }
+
+    /// exp(1e6): minimax polynomial brings this within precision target.
+    /// JS: 3.0332153969064635e434294  →  mantissa=3033215396906463232 exp=434294
+    function test_exp_1e6_ref() public pure {
+        Decimal.D memory r = Decimal.exp(_d(S, 6));
+        assertEq(r.exponent, 434294, "exp(1e6): e");
+        // 1e-9 relative tolerance — minimax polynomial brings this within precision target
+        assertLe(_relErr(r, _d(3_033_215_396_906_463_232, 434294)), 1e9, "exp(1e6): 1e-9 rel");
     }
 
     // ── Phase J: sinh / cosh / tanh / asinh / acosh / atanh ──────────────────
