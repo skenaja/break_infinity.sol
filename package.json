@@ -8,10 +8,15 @@
     "evm",
     "math",
     "decimal",
+    "bigdecimal",
+    "bignumber",
+    "bignum",
+    "fixed-point",
+    "floating-point",
+    "break-infinity",
     "incremental",
     "idle-game",
-    "break-infinity",
-    "fixed-point"
+    "game"
   ],
   "license": "MIT",
   "files": [

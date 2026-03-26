@@ -1,4 +1,4 @@
-# break_infinity_sol
+# break_infinity.sol
 
 Solidity port of [break_infinity.js](https://github.com/Patashu/break_infinity.js) —
 arbitrary-scale fixed-point decimals optimised for on-chain incremental / idle-game mechanics.

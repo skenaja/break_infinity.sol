@@ -5,7 +5,7 @@ import {DecimalMath} from "./DecimalMath.sol";
 import {IDecimalErrors} from "./interfaces/IDecimalErrors.sol";
 
 /// @title Decimal
-/// @author break_infinity_sol contributors
+/// @author break_infinity.sol contributors
 /// @notice Solidity port of break_infinity.js — arbitrary-scale numbers for
 ///         on-chain incremental / idle-game mechanics.
 ///

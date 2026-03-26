@@ -1,4 +1,4 @@
-# break_infinity_sol
+# break_infinity.sol
 
 A Solidity port of [break_infinity.js](https://github.com/Patashu/break_infinity.js) — arbitrary-scale floating-point decimals optimised for on-chain incremental / idle-game mechanics.
 
@@ -11,33 +11,31 @@ Numbers are represented as `sign × (mantissa / 1e18) × 10^exponent`, packing t
 **npm / Hardhat / Truffle**
 
 ```sh
-npm install break-infinity-sol
+npm install break_infinity.sol
 ```
 
-Then import directly — no remapping needed:
+Then import directly:
 
 ```solidity
-import {Decimal} from "break-infinity-sol/Decimal.sol";
+import {Decimal} from "break_infinity.sol/Decimal.sol";
 ```
 
-If you use Hardhat with a custom sources path, add to `hardhat.config.js`:
+Hardhat resolves `node_modules` imports by default, so no remapping is needed. If you use a custom sources path, add to `hardhat.config.js`:
 
 ```js
 paths: { sources: "./contracts" }
 ```
 
-and include `node_modules` in your import path resolution (the default for Hardhat).
-
 **Foundry (forge install)**
 
 ```sh
-forge install <your-org>/break_infinity_sol
+forge install skenaja/break_infinity.sol
 ```
 
 Add a remapping in `foundry.toml`:
 
 ```toml
-remappings = ["break-infinity-sol/=lib/break_infinity_sol/src/"]
+remappings = ["break_infinity.sol/=lib/break_infinity.sol/src/"]
 ```
 
 **Foundry + npm**
@@ -45,12 +43,12 @@ remappings = ["break-infinity-sol/=lib/break_infinity_sol/src/"]
 If you prefer npm over git submodules in a Foundry project, install the package and map it:
 
 ```sh
-npm install break-infinity-sol
+npm install break_infinity.sol
 ```
 
 ```toml
 # foundry.toml
-remappings = ["break-infinity-sol/=node_modules/break-infinity-sol/src/"]
+remappings = ["break_infinity.sol/=node_modules/break_infinity.sol/src/"]
 ```
 
 **Manual copy**
@@ -65,7 +63,7 @@ Copy `src/Decimal.sol`, `src/DecimalMath.sol`, and `src/interfaces/IDecimalError
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Decimal} from "break_infinity_sol/Decimal.sol";
+import {Decimal} from "break_infinity.sol/Decimal.sol";
 
 contract IdleGame {
     using Decimal for Decimal.D;
@@ -168,7 +166,14 @@ Construct values with the helper functions — do not set struct fields directly
 
 ### Hyperbolic
 
-`sinh`, `cosh`, `tanh`, `asinh`, `acosh` (requires a ≥ 1), `atanh` (requires \|a\| < 1).
+| Function | Description |
+|---|---|
+| `sinh(a)` | Hyperbolic sine |
+| `cosh(a)` | Hyperbolic cosine |
+| `tanh(a)` | Hyperbolic tangent |
+| `asinh(a)` | Inverse hyperbolic sine |
+| `acosh(a)` | Inverse hyperbolic cosine (requires a ≥ 1) |
+| `atanh(a)` | Inverse hyperbolic tangent (requires \|a\| < 1) |
 
 ### Game economy helpers
 
@@ -244,3 +249,13 @@ src/
 ```
 
 `DecimalMath` is an independent library of fixed-point primitives and can be used separately if needed.
+
+---
+
+## Acknowledgements
+
+- **[break_infinity.js](https://github.com/Patashu/break_infinity.js)** by Patashu — the original JavaScript library this is a direct port of. All algorithms, data representation, and game economy helpers derive from it.
+- **[Uniswap v3 FullMath](https://github.com/Uniswap/v3-core/blob/main/contracts/libraries/FullMath.sol)** — the 512-bit intermediate `mulDiv` implementation used in `DecimalMath`.
+- **[mpmath](https://mpmath.org/)** — used to compute the degree-20 minimax polynomial coefficients for the `log2` fractional part at 80-digit precision via Chebyshev-node interpolation.
+
+---
